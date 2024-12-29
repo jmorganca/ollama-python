@@ -1,6 +1,8 @@
 import base64
 import os
 import json
+
+import httpx
 from pydantic import ValidationError, BaseModel
 import pytest
 import tempfile
@@ -9,6 +11,7 @@ from pytest_httpserver import HTTPServer, URIPattern
 from werkzeug.wrappers import Request, Response
 
 from ollama._client import Client, AsyncClient, _copy_tools
+from ollama._types import ResponseError
 
 PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC'
 PNG_BYTES = base64.b64decode(PNG_BASE64)
@@ -200,6 +203,29 @@ def test_client_chat_format_pydantic(httpserver: HTTPServer):
   assert response['message']['content'] == '{"answer": "Because of Rayleigh scattering", "confidence": 0.95}'
 
 
+def test_client_gracefully_handles_ollama_server_not_running(httpserver: HTTPServer):
+  httpserver.expect_ordered_request(
+    '/api/chat',
+    method='POST',
+    json={
+      'model': 'dummy',
+      'messages': [{'role': 'user', 'content': 'Why is the sky blue?'}],
+      'tools': [],
+      'format': 'json',
+      'stream': False,
+    },
+  ).respond_with_handler(lambda _: Response())
+
+  def _monkey_patched_request_func(*args, **kwargs):
+    raise httpx.ConnectError("[Errno 111] Connection refused")
+
+  client = Client(httpserver.url_for('/'))
+  client._client.request = _monkey_patched_request_func
+
+  with pytest.raises(ResponseError):
+    client.chat('dummy', messages=[{'role': 'user', 'content': 'Why is the sky blue?'}], format='json')
+
+
 @pytest.mark.asyncio
 async def test_async_client_chat_format_json(httpserver: HTTPServer):
   httpserver.expect_ordered_request(
@@ -260,6 +286,30 @@ async def test_async_client_chat_format_pydantic(httpserver: HTTPServer):
   assert response['model'] == 'dummy'
   assert response['message']['role'] == 'assistant'
   assert response['message']['content'] == '{"answer": "Because of Rayleigh scattering", "confidence": 0.95}'
+
+
+@pytest.mark.asyncio
+async def test_async_client_gracefully_handles_ollama_server_not_running(httpserver: HTTPServer):
+  httpserver.expect_ordered_request(
+    '/api/chat',
+    method='POST',
+    json={
+      'model': 'dummy',
+      'messages': [{'role': 'user', 'content': 'Why is the sky blue?'}],
+      'tools': [],
+      'format': 'json',
+      'stream': False,
+    },
+  ).respond_with_handler(lambda _: Response())
+
+  async def _monkey_patched_request_func(*args, **kwargs):
+    raise httpx.ConnectError("[Errno 111] Connection refused")
+
+  client = AsyncClient(httpserver.url_for('/'))
+  client._client.request = _monkey_patched_request_func
+
+  with pytest.raises(ResponseError):
+    await client.chat('dummy', messages=[{'role': 'user', 'content': 'Why is the sky blue?'}], format='json')
 
 
 def test_client_generate(httpserver: HTTPServer):
